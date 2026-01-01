@@ -1,6 +1,8 @@
 node_modules/
 .expo/
 .git/
+.vscode/
 dist/
 web-build/
-vscode/
+android/
+ios/
