@@ -1,16 +1,17 @@
-import { format } from 'date-fns';
+import { differenceInCalendarDays, endOfDay, format, isAfter, isBefore, parseISO, startOfDay } from 'date-fns';
 import { collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore';
 import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { db } from '../firebaseConfig';
-import { CycleOverride, RecurringItem, Transaction, UserProfile } from '../types';
-import { getCurrentPayPeriod } from '../utils/dateLogic';
+import { CycleOverride, PlannedExpense, RecurringItem, Transaction, UserProfile } from '../types';
+import { getPayPeriodWithOffset, isBillDueInPeriod } from '../utils/dateLogic';
 
 export interface DashboardData {
   leftToSpend: number;
   baseIncome: number;
   totalRecurring: number;
   totalSpent: number;
+  totalPlanned: number;
   currencyCode: string;
   currencySymbol: string;
   currentCycle: {
@@ -18,28 +19,49 @@ export interface DashboardData {
     endDate: Date;
   } | null;
   transactions: Transaction[];
+  plannedExpenses: PlannedExpense[];
   userProfile: UserProfile | null;
   loading: boolean;
   error: string | null;
   progress: number; // 0 to 1
+  daysRemaining: number;
+  safeDailyAllowance: number;
+  cycleOffset: number;
+  setCycleOffset: (offset: number) => void;
+  navigateCycle: (direction: number) => void;
+  resetToCurrentCycle: () => void;
   refetch: () => Promise<void>;
 }
 
-export const useDashboardData = (): DashboardData => {
+export const useDashboardData = (initialOffset: number = 0): DashboardData => {
   const { user } = useAuth();
-  const [data, setData] = useState<DashboardData>({
+  const [cycleOffset, setCycleOffset] = useState(initialOffset);
+
+  const navigateCycle = useCallback((delta: number) => {
+    setCycleOffset(prev => prev + delta);
+  }, []);
+
+  const resetToCurrentCycle = useCallback(() => {
+    setCycleOffset(0);
+  }, []);
+
+  const [data, setData] = useState<Omit<DashboardData, 'cycleOffset' | 'setCycleOffset' | 'navigateCycle' | 'resetToCurrentCycle'>>({
     leftToSpend: 0,
     baseIncome: 0,
     totalRecurring: 0,
     totalSpent: 0,
+    totalPlanned: 0,
     currencyCode: 'USD',
     currencySymbol: '$',
     currentCycle: null,
     transactions: [],
+    plannedExpenses: [],
     userProfile: null,
     loading: true,
     error: null,
     progress: 0,
+    daysRemaining: 1,
+    safeDailyAllowance: 0,
     refetch: async () => {},
   });
 
@@ -63,8 +85,8 @@ export const useDashboardData = (): DashboardData => {
       const userProfile = userDocSnap.data() as UserProfile;
       const { financialSettings, preferences } = userProfile;
 
-      // 2. Calculate Current Pay Period
-      const currentCycle = getCurrentPayPeriod(financialSettings);
+      // 2. Calculate Pay Period for active cycleOffset
+      const currentCycle = getPayPeriodWithOffset(financialSettings, cycleOffset);
       const { startDate, endDate } = currentCycle;
 
       // 2.5 Fetch Cycle Override
@@ -86,15 +108,13 @@ export const useDashboardData = (): DashboardData => {
         ...doc.data(),
       })) as RecurringItem[];
 
-      // Filter active recurring items and sum them
-      const activeRecurringItems = recurringItems.filter(item => item.isActive);
+      // Filter active recurring items that fall due within this cycle and sum them
+      const activeRecurringItems = recurringItems.filter(item =>
+        isBillDueInPeriod(item, startDate, endDate)
+      );
       const totalRecurring = activeRecurringItems.reduce((sum, item) => sum + item.amount, 0);
 
       // 4. Fetch Transactions
-      // We'll fetch all transactions and filter in memory for now to avoid complex indexes, 
-      // or we can try to filter by date if we have a standard date format.
-      // Transactions store date as ISO String.
-      // Firestore string comparison works for ISO dates.
       const transactionsCollRef = collection(db, 'users', user.uid, 'transactions');
       const q = query(
         transactionsCollRef,
@@ -102,59 +122,84 @@ export const useDashboardData = (): DashboardData => {
         where('date', '<=', endDate.toISOString())
       );
       
-      // Note: If 'date' is stored as just YYYY-MM-DD, we might need to be careful.
-      // The type definition says ISO String.
-      // Let's assume standard ISO format.
-      
       const transactionsSnapshot = await getDocs(q);
       const transactions = transactionsSnapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data(),
       })) as Transaction[];
 
-      // Filter expenses (amount is positive, type is 'expense')
-      const expensesInPeriod = transactions.filter(t => t.type === 'expense');
+      // Filter expenses: exclude transactions that are auto-generated/linked instances of recurring bills
+      const expensesInPeriod = transactions.filter(t => t.type === 'expense' && !t.isRecurringInstance);
       const totalSpent = expensesInPeriod.reduce((sum, t) => sum + t.amount, 0);
 
       // Filter ad-hoc income
       const incomeInPeriod = transactions.filter(t => t.type === 'income');
       const totalAdHocIncome = incomeInPeriod.reduce((sum, t) => sum + t.amount, 0);
 
+      // 4.5 Fetch Planned Expenses for this Period
+      let plannedInPeriod: PlannedExpense[] = [];
+      let totalPlanned = 0;
+      try {
+        const plannedCollRef = collection(db, 'users', user.uid, 'planned_expenses');
+        const plannedSnapshot = await getDocs(plannedCollRef);
+        const allPlanned = plannedSnapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data(),
+        })) as PlannedExpense[];
+
+        plannedInPeriod = allPlanned.filter(item => {
+          if (item.isCompleted) return false;
+          if (!item.targetDate) return false;
+          const target = parseISO(item.targetDate);
+          return !isBefore(target, startOfDay(startDate)) && !isAfter(target, endOfDay(endDate));
+        });
+        totalPlanned = plannedInPeriod.reduce((sum, item) => sum + item.amount, 0);
+      } catch (err) {
+        console.warn('Error fetching planned expenses:', err);
+      }
+
       // 5. Calculate Left to Spend
-      // Formula: LeftToSpend = (BaseIncome + AdHocIncome) - (SumOfActiveRecurringBills) - (SumOfExpensesInPeriod)
-      // Note: income is now potentially overridden (calculated above)
-      const leftToSpend = (income + totalAdHocIncome) - totalRecurring - totalSpent;
+      // Formula: LeftToSpend = (BaseIncome + AdHocIncome) - (SumOfActiveRecurringBills) - (SumOfExpensesInPeriod) - (SumOfPlannedExpenses)
+      const leftToSpend = (income + totalAdHocIncome) - totalRecurring - totalSpent - totalPlanned;
 
       // Calculate Progress
-      // Progress = Spent / Disposable Income?
-      // Or Progress = (TotalRecurring + TotalSpent) / Income?
-      // "Show a progress bar indicating how much of the disposable income has been spent."
-      // Disposable Income usually means Income - Fixed Bills.
-      // So Disposable = Income - TotalRecurring.
-      // Spent = TotalSpent.
-      // Progress = TotalSpent / (Income - TotalRecurring).
-      
       let progress = 0;
-      const disposableIncome = income - totalRecurring;
+      const disposableIncome = income - totalRecurring - totalPlanned;
       if (disposableIncome > 0) {
         progress = totalSpent / disposableIncome;
       } else if (totalSpent > 0) {
         progress = 1; // Over budget or 0 disposable
       }
 
+      // Calculate Days Remaining and Safe Daily Allowance
+      const today = startOfDay(new Date());
+      let daysRemaining = 0;
+      if (cycleOffset === 0) {
+        daysRemaining = Math.max(1, differenceInCalendarDays(endDate, today) + 1);
+      } else if (cycleOffset > 0) {
+        daysRemaining = Math.max(1, differenceInCalendarDays(endDate, startDate) + 1);
+      } else {
+        daysRemaining = 0;
+      }
+      const safeDailyAllowance = daysRemaining > 0 ? Math.max(0, leftToSpend / daysRemaining) : 0;
+
       setData({
         leftToSpend,
         baseIncome: income,
         totalRecurring,
         totalSpent,
+        totalPlanned,
         currencyCode: preferences?.currencyCode || 'USD',
         currencySymbol: preferences?.currencySymbol || '$',
         currentCycle,
         transactions,
+        plannedExpenses: plannedInPeriod,
         userProfile,
         loading: false,
         error: null,
-        progress: Math.min(Math.max(progress, 0), 1), // Clamp between 0 and 1
+        progress: Math.min(Math.max(progress, 0), 1),
+        daysRemaining,
+        safeDailyAllowance,
         refetch: fetchData,
       });
 
@@ -162,11 +207,17 @@ export const useDashboardData = (): DashboardData => {
       console.error('Error fetching dashboard data:', err);
       setData(prev => ({ ...prev, loading: false, error: err.message }));
     }
-  }, [user]);
+  }, [user, cycleOffset]);
 
   useEffect(() => {
     fetchData();
   }, [fetchData]);
 
-  return data;
+  return {
+    ...data,
+    cycleOffset,
+    setCycleOffset,
+    navigateCycle,
+    resetToCurrentCycle,
+  };
 };

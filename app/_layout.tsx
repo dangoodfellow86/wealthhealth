@@ -21,8 +21,9 @@ function RootLayoutNav() {
   useEffect(() => {
     if (isLoading) return;
 
-    const inAuthGroup = segments[0] === '(auth)';
-    const inOnboarding = segments[1] === 'onboarding';
+    const segmentsList = segments as string[];
+    const inAuthGroup = segmentsList[0] === '(auth)';
+    const inOnboarding = segmentsList[1] === 'onboarding';
 
     if (!user && !inAuthGroup) {
       // If not authenticated and not in auth group, redirect to welcome

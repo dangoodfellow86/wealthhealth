@@ -47,16 +47,30 @@ export interface Transaction {
   isRecurringInstance: boolean; // True if this was auto-generated from a bill
 }
 
+export type BillFrequency = 'WEEKLY' | 'BI_WEEKLY' | 'MONTHLY' | 'QUARTERLY' | 'ANNUAL';
+
 export interface RecurringItem {
   id: string;
   title: string; // e.g., "Netflix"
   amount: number;
   isActive: boolean;
   category: string; // "Bills"
+  frequency?: BillFrequency; // Defaults to 'MONTHLY'
   dayOfMonth?: number; // e.g., 15
+  dueMonth?: number; // 1-12 (for ANNUAL and QUARTERLY bills)
 }
 
 export interface CycleOverride {
   startDate: string; // ISO String, acts as ID
   amount: number;
+}
+
+export interface PlannedExpense {
+  id: string;
+  title: string;
+  amount: number;
+  targetDate: string; // ISO String (YYYY-MM-DD or full ISO)
+  category: string;
+  note?: string;
+  isCompleted?: boolean;
 }

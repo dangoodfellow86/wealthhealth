@@ -6,7 +6,13 @@ import { browserLocalPersistence, getReactNativePersistence, initializeAuth } fr
 import ReactNativeAsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 
-import { getFirestore } from 'firebase/firestore';
+import {
+  Firestore,
+  getFirestore,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+} from 'firebase/firestore';
 
 // Your web app's Firebase configuration
 const firebaseConfig = {
@@ -23,11 +29,19 @@ const app = initializeApp(firebaseConfig);
 
 // Initialize Auth with persistence
 const auth = initializeAuth(app, {
-  persistence: Platform.OS === 'web' ? browserLocalPersistence : getReactNativePersistence(ReactNativeAsyncStorage)
+  persistence: Platform.OS === 'web' ? browserLocalPersistence : getReactNativePersistence(ReactNativeAsyncStorage),
 });
 
-// Initialize Firestore
-const db = getFirestore(app);
+// Initialize Firestore with persistent local cache for offline-first support
+let db: Firestore;
+try {
+  db = initializeFirestore(app, {
+    localCache: persistentLocalCache({
+      tabManager: persistentMultipleTabManager(),
+    }),
+  });
+} catch {
+  db = getFirestore(app);
+}
 
 export { auth, db };
-

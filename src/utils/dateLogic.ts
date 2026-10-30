@@ -1,4 +1,5 @@
 import {
+  addDays,
   addMonths,
   addWeeks,
   endOfDay,
@@ -13,7 +14,7 @@ import {
   subDays,
   subMonths
 } from 'date-fns';
-import { PayFrequency, UserProfile } from '../types';
+import { PayFrequency, RecurringItem, UserProfile } from '../types';
 
 /**
  * Helper to find the last working day of a given month.
@@ -192,4 +193,106 @@ export const getCurrentPayPeriod = (
     console.error("Error calculating pay period:", error);
     return fallback;
   }
+};
+
+/**
+ * Calculates a pay period with an offset from today.
+ * offset = 0: current pay period
+ * offset > 0: N periods into the future
+ * offset < 0: N periods into the past
+ */
+export const getPayPeriodWithOffset = (
+  financialSettings: UserProfile['financialSettings'],
+  offset: number = 0,
+  referenceDate: Date = new Date()
+): { startDate: Date; endDate: Date } => {
+  let period = getCurrentPayPeriod(financialSettings, referenceDate);
+  if (offset === 0) return period;
+
+  if (offset > 0) {
+    for (let i = 0; i < offset; i++) {
+      const nextDay = addDays(period.endDate, 1);
+      period = getCurrentPayPeriod(financialSettings, nextDay);
+    }
+  } else {
+    for (let i = 0; i < Math.abs(offset); i++) {
+      const prevDay = subDays(period.startDate, 1);
+      period = getCurrentPayPeriod(financialSettings, prevDay);
+    }
+  }
+
+  return period;
+};
+
+/**
+ * Determines whether a recurring bill is due within a given pay period.
+ */
+export const isBillDueInPeriod = (
+  bill: RecurringItem,
+  cycleStart: Date,
+  cycleEnd: Date
+): boolean => {
+  if (!bill.isActive) return false;
+  const frequency = bill.frequency || 'MONTHLY';
+
+  const start = startOfDay(cycleStart);
+  const end = endOfDay(cycleEnd);
+
+  if (frequency === 'WEEKLY' || frequency === 'BI_WEEKLY') {
+    return true;
+  }
+
+  const startYear = start.getFullYear();
+  const endYear = end.getFullYear();
+
+  if (frequency === 'ANNUAL') {
+    const targetMonth = (bill.dueMonth || 1) - 1; // 0-indexed
+    const targetDay = bill.dayOfMonth || 1;
+
+    for (let yr = startYear; yr <= endYear; yr++) {
+      const daysInTargetMonth = lastDayOfMonth(new Date(yr, targetMonth, 1)).getDate();
+      const actualDay = Math.min(targetDay, daysInTargetMonth);
+      const billDate = startOfDay(new Date(yr, targetMonth, actualDay));
+      if (!isBefore(billDate, start) && !isAfter(billDate, end)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  if (frequency === 'QUARTERLY') {
+    const baseMonth = (bill.dueMonth || 1) - 1;
+    const targetDay = bill.dayOfMonth || 1;
+    const quarterlyMonths = [baseMonth % 3, (baseMonth % 3) + 3, (baseMonth % 3) + 6, (baseMonth % 3) + 9];
+
+    for (let yr = startYear; yr <= endYear; yr++) {
+      for (const m of quarterlyMonths) {
+        const daysInTargetMonth = lastDayOfMonth(new Date(yr, m, 1)).getDate();
+        const actualDay = Math.min(targetDay, daysInTargetMonth);
+        const billDate = startOfDay(new Date(yr, m, actualDay));
+        if (!isBefore(billDate, start) && !isAfter(billDate, end)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  // Default: MONTHLY
+  if (!bill.dayOfMonth) {
+    return true; // No specific date provided; applies to every monthly cycle
+  }
+
+  let cursor = startOfDay(start);
+  while (!isAfter(cursor, end)) {
+    const daysInMonth = lastDayOfMonth(cursor).getDate();
+    const actualDay = Math.min(bill.dayOfMonth, daysInMonth);
+    const billDate = startOfDay(setDate(cursor, actualDay));
+    if (!isBefore(billDate, start) && !isAfter(billDate, end)) {
+      return true;
+    }
+    cursor = addMonths(cursor, 1);
+  }
+
+  return false;
 };

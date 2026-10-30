@@ -1,15 +1,33 @@
 import { format } from 'date-fns';
 import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useState } from 'react';
-import { ActivityIndicator, Alert, Dimensions, Modal, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Alert,
+  Dimensions,
+  Modal,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import { PieChart } from 'react-native-gifted-charts';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { IconSymbol } from '../../components/ui/icon-symbol';
 import { useAuth } from '../context/AuthContext';
 import { useDashboardData } from '../hooks/useDashboardData';
 import { useThemeColor } from '../hooks/useThemeColor';
+import {
+  addPlannedExpense,
+  convertPlannedToTransaction,
+  deletePlannedExpense,
+} from '../services/plannedExpenseService';
 import { addTransaction } from '../services/transactionService';
 import { setIncomeOverride } from '../services/userService';
+import { PlannedExpense } from '../types';
 import { groupExpensesByCategory } from '../utils/chartLogic';
 
 const { width } = Dimensions.get('window');
@@ -29,12 +47,28 @@ export const DashboardScreen = () => {
     refetch,
     currencyCode,
     transactions,
+    plannedExpenses,
+    totalPlanned,
     totalSpent,
-    userProfile
+    userProfile,
+    daysRemaining,
+    safeDailyAllowance,
+    cycleOffset,
+    navigateCycle,
+    resetToCurrentCycle,
   } = useDashboardData();
 
+  // Edit Income Modal State
   const [editIncomeModalVisible, setEditIncomeModalVisible] = useState(false);
   const [tempIncome, setTempIncome] = useState('');
+
+  // Plan Expense Modal State
+  const [planModalVisible, setPlanModalVisible] = useState(false);
+  const [planTitle, setPlanTitle] = useState('');
+  const [planAmount, setPlanAmount] = useState('');
+  const [planDate, setPlanDate] = useState('');
+  const [planCategory, setPlanCategory] = useState('Other');
+  const [savingPlan, setSavingPlan] = useState(false);
 
   const handleEditIncome = () => {
     setTempIncome(baseIncome.toString());
@@ -58,6 +92,84 @@ export const DashboardScreen = () => {
     }
   };
 
+  const handleOpenPlanModal = () => {
+    setPlanTitle('');
+    setPlanAmount('');
+    setPlanCategory('Other');
+    setPlanDate(currentCycle ? format(currentCycle.startDate, 'yyyy-MM-dd') : format(new Date(), 'yyyy-MM-dd'));
+    setPlanModalVisible(true);
+  };
+
+  const handleSavePlannedExpense = async () => {
+    if (!user) return;
+    if (!planTitle.trim()) {
+      Alert.alert('Error', 'Please enter a title for the planned expense');
+      return;
+    }
+    const amount = parseFloat(planAmount);
+    if (isNaN(amount) || amount <= 0) {
+      Alert.alert('Error', 'Please enter a valid amount');
+      return;
+    }
+
+    try {
+      setSavingPlan(true);
+      await addPlannedExpense(user.uid, {
+        title: planTitle.trim(),
+        amount,
+        targetDate: planDate,
+        category: planCategory,
+      });
+      setPlanModalVisible(false);
+      refetch();
+    } catch (err) {
+      Alert.alert('Error', 'Failed to save planned expense');
+    } finally {
+      setSavingPlan(false);
+    }
+  };
+
+  const handleConvertPlanned = (item: PlannedExpense) => {
+    Alert.alert(
+      'Log as Paid',
+      `Move "${item.title}" (${new Intl.NumberFormat('en-US', { style: 'currency', currency: currencyCode }).format(item.amount)}) to logged expenses?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Log Expense',
+          onPress: async () => {
+            if (!user) return;
+            try {
+              await convertPlannedToTransaction(user.uid, item);
+              refetch();
+            } catch (err) {
+              Alert.alert('Error', 'Failed to log expense');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleDeletePlanned = (id: string) => {
+    Alert.alert('Remove Earmark', 'Are you sure you want to delete this planned expense?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          if (!user) return;
+          try {
+            await deletePlannedExpense(user.uid, id);
+            refetch();
+          } catch (err) {
+            Alert.alert('Error', 'Failed to delete planned expense');
+          }
+        },
+      },
+    ]);
+  };
+
   const handleSweep = () => {
     Alert.alert(
       'Sweep to Savings',
@@ -76,15 +188,15 @@ export const DashboardScreen = () => {
                 date: new Date().toISOString(),
                 note: 'End of cycle sweep',
                 accountId: 'default',
-                isRecurringInstance: false
+                isRecurringInstance: false,
               });
               refetch();
               Alert.alert('Success', 'Swept to savings!');
             } catch (error) {
               Alert.alert('Error', 'Failed to sweep');
             }
-          }
-        }
+          },
+        },
       ]
     );
   };
@@ -101,7 +213,7 @@ export const DashboardScreen = () => {
     refetch();
   }, [refetch]);
 
-  if (loading) {
+  if (loading && !currentCycle) {
     return (
       <View style={[styles.centered, { backgroundColor: colors.background }]}>
         <ActivityIndicator size="large" color={colors.primary} />
@@ -113,7 +225,9 @@ export const DashboardScreen = () => {
     return (
       <View style={[styles.centered, { backgroundColor: colors.background }]}>
         <Text style={styles.errorText}>Error: {error}</Text>
-        <Text style={[styles.retryText, { color: colors.primary }]} onPress={() => refetch()}>Tap to retry</Text>
+        <Text style={[styles.retryText, { color: colors.primary }]} onPress={() => refetch()}>
+          Tap to retry
+        </Text>
       </View>
     );
   }
@@ -121,14 +235,16 @@ export const DashboardScreen = () => {
   const formattedStartDate = currentCycle ? format(currentCycle.startDate, 'MMM d') : '-';
   const formattedEndDate = currentCycle ? format(currentCycle.endDate, 'MMM d') : '-';
 
-  // Determine color based on left to spend
   const isLow = leftToSpend < 0;
   const spendColor = isLow ? '#FF3B30' : '#34C759';
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
       <ScrollView
-        contentContainerStyle={[styles.container, { backgroundColor: colors.background, paddingTop: insets.top + 20 }]}
+        contentContainerStyle={[
+          styles.container,
+          { backgroundColor: colors.background, paddingTop: insets.top + 20 },
+        ]}
         refreshControl={
           <RefreshControl refreshing={loading} onRefresh={onRefresh} tintColor={colors.text} />
         }
@@ -136,27 +252,101 @@ export const DashboardScreen = () => {
         <View style={styles.headerContainer}>
           <View>
             <Text style={[styles.greetingText, { color: colors.textSecondary }]}>Welcome back,</Text>
-            <Text style={[styles.userNameText, { color: colors.text }]}>{userProfile?.displayName || user?.displayName || 'User'}</Text>
+            <Text style={[styles.userNameText, { color: colors.text }]}>
+              {userProfile?.displayName || user?.displayName || 'User'}
+            </Text>
           </View>
 
-          {/* Profile Avatar (Placeholder) */}
-          <TouchableOpacity onPress={() => router.push('/(tabs)/profile')} style={[styles.profileButton, { backgroundColor: colors.border }]}>
+          {/* Profile Avatar */}
+          <TouchableOpacity
+            onPress={() => router.push('/(tabs)/profile')}
+            style={[styles.profileButton, { backgroundColor: colors.border }]}
+          >
             <Text style={[styles.profileInitials, { color: colors.textSecondary }]}>
-              {userProfile?.displayName ? userProfile.displayName.charAt(0).toUpperCase() : (user?.displayName ? user.displayName.charAt(0).toUpperCase() : 'U')}
+              {userProfile?.displayName
+                ? userProfile.displayName.charAt(0).toUpperCase()
+                : user?.displayName
+                ? user.displayName.charAt(0).toUpperCase()
+                : 'U'}
             </Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Cycle Navigation Bar */}
+        <View style={[styles.cycleNavCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+          <TouchableOpacity
+            onPress={() => navigateCycle(-1)}
+            style={[styles.cycleNavButton, { backgroundColor: colors.border }]}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          >
+            <IconSymbol name="chevron.left" size={18} color={colors.text} />
+          </TouchableOpacity>
+
+          <View style={styles.cycleNavCenter}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
+              <Text style={[styles.cycleNavTitle, { color: colors.text }]}>
+                {cycleOffset === 0
+                  ? 'Current Cycle'
+                  : cycleOffset > 0
+                  ? `Next Cycle (+${cycleOffset})`
+                  : `Past Cycle (${cycleOffset})`}
+              </Text>
+              {cycleOffset !== 0 && (
+                <TouchableOpacity onPress={resetToCurrentCycle} style={[styles.todayPill, { backgroundColor: colors.primary }]}>
+                  <Text style={styles.todayPillText}>Today</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+            <Text style={[styles.cycleNavDates, { color: colors.textSecondary }]}>
+              {formattedStartDate} – {formattedEndDate}
+            </Text>
+          </View>
+
+          <TouchableOpacity
+            onPress={() => navigateCycle(1)}
+            style={[styles.cycleNavButton, { backgroundColor: colors.border }]}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          >
+            <IconSymbol name="chevron.right" size={18} color={colors.text} />
           </TouchableOpacity>
         </View>
 
         {/* Left to Spend Card */}
         <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-            <Text style={[styles.cardTitle, { color: colors.textSecondary }]}>Left to Spend</Text>
-            <Text style={[styles.cycleDates, { color: colors.textSecondary }]}>{formattedStartDate} - {formattedEndDate}</Text>
+            <Text style={[styles.cardTitle, { color: colors.textSecondary }]}>
+              {cycleOffset > 0 ? 'Projected Left to Spend' : cycleOffset < 0 ? 'Historical Left to Spend' : 'Left to Spend'}
+            </Text>
+            <Text style={[styles.cycleDates, { color: colors.textSecondary }]}>
+              {formattedStartDate} - {formattedEndDate}
+            </Text>
           </View>
-          
+
           <Text style={[styles.amount, { color: spendColor }]}>
             {new Intl.NumberFormat('en-US', { style: 'currency', currency: currencyCode }).format(leftToSpend)}
           </Text>
+
+          <View style={[styles.dailyAllowanceBadge, { backgroundColor: isLow ? '#FF3B3015' : '#34C75915' }]}>
+            <Text style={[styles.dailyAllowanceText, { color: spendColor }]}>
+              {cycleOffset < 0
+                ? 'Cycle concluded'
+                : cycleOffset > 0
+                ? `Projected daily budget: `
+                : `Safe daily budget: `}
+              {cycleOffset >= 0 && (
+                <Text style={{ fontWeight: '700' }}>
+                  {new Intl.NumberFormat('en-US', { style: 'currency', currency: currencyCode }).format(safeDailyAllowance)} / day
+                </Text>
+              )}
+            </Text>
+            {cycleOffset >= 0 && (
+              <Text style={[styles.dailyAllowanceSubtext, { color: colors.textSecondary }]}>
+                {cycleOffset === 0
+                  ? `${daysRemaining} ${daysRemaining === 1 ? 'day' : 'days'} remaining in cycle`
+                  : `${daysRemaining} days in scheduled period`}
+              </Text>
+            )}
+          </View>
 
           <View style={[styles.incomeContainer, { borderTopColor: colors.border }]}>
             <Text style={[styles.incomeLabel, { color: colors.text }]}>Income:</Text>
@@ -170,13 +360,22 @@ export const DashboardScreen = () => {
             </View>
           </View>
 
+          {totalPlanned > 0 && (
+            <View style={[styles.incomeContainer, { borderTopColor: colors.border }]}>
+              <Text style={[styles.incomeLabel, { color: colors.text }]}>Earmarks Reserved:</Text>
+              <Text style={[styles.incomeValue, { color: '#F59E0B', fontWeight: '700' }]}>
+                -{new Intl.NumberFormat('en-US', { style: 'currency', currency: currencyCode }).format(totalPlanned)}
+              </Text>
+            </View>
+          )}
+
           {/* Progress Bar */}
           <View style={styles.progressContainer}>
             <View style={[styles.progressBarBackground, { backgroundColor: colors.border }]}>
               <View
                 style={[
                   styles.progressBarFill,
-                  { width: `${progress * 100}%`, backgroundColor: colors.primary }
+                  { width: `${progress * 100}%`, backgroundColor: colors.primary },
                 ]}
               />
             </View>
@@ -211,6 +410,62 @@ export const DashboardScreen = () => {
           </TouchableOpacity>
         </View>
 
+        {/* Planned Expenses (Earmarks) Card */}
+        <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <View>
+              <Text style={[styles.cardTitle, { color: colors.textSecondary }]}>Planned Earmarks</Text>
+              <Text style={{ fontSize: 12, color: colors.textSecondary, marginTop: 2 }}>
+                {cycleOffset > 0 ? 'Budget reserved for future planning' : 'Upcoming expenses reserved this cycle'}
+              </Text>
+            </View>
+            <TouchableOpacity
+              onPress={handleOpenPlanModal}
+              style={[styles.addEarmarkButton, { backgroundColor: colors.primary }]}
+            >
+              <Text style={styles.addEarmarkButtonText}>+ Plan</Text>
+            </TouchableOpacity>
+          </View>
+
+          {plannedExpenses.length === 0 ? (
+            <Text style={{ fontSize: 14, color: colors.textSecondary, fontStyle: 'italic', marginVertical: 8 }}>
+              No earmarks planned for this cycle.
+            </Text>
+          ) : (
+            plannedExpenses.map(item => (
+              <View key={item.id} style={[styles.earmarkItem, { borderBottomColor: colors.border }]}>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.earmarkTitle, { color: colors.text }]}>{item.title}</Text>
+                  <Text style={{ fontSize: 12, color: colors.textSecondary }}>
+                    {item.targetDate} • {item.category}
+                  </Text>
+                </View>
+
+                <Text style={[styles.earmarkAmount, { color: colors.text }]}>
+                  {new Intl.NumberFormat('en-US', { style: 'currency', currency: currencyCode }).format(item.amount)}
+                </Text>
+
+                <View style={{ flexDirection: 'row', alignItems: 'center', marginLeft: 8, gap: 6 }}>
+                  {cycleOffset === 0 && (
+                    <TouchableOpacity
+                      onPress={() => handleConvertPlanned(item)}
+                      style={[styles.actionIconPill, { backgroundColor: '#10B98120' }]}
+                    >
+                      <Text style={{ fontSize: 11, color: '#10B981', fontWeight: '700' }}>Paid</Text>
+                    </TouchableOpacity>
+                  )}
+                  <TouchableOpacity
+                    onPress={() => handleDeletePlanned(item.id)}
+                    style={[styles.actionIconPill, { backgroundColor: '#FF3B3020' }]}
+                  >
+                    <Text style={{ fontSize: 11, color: '#FF3B30', fontWeight: '700' }}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ))
+          )}
+        </View>
+
         {/* Spending Breakdown Chart */}
         {chartData.length > 0 && (
           <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
@@ -222,16 +477,14 @@ export const DashboardScreen = () => {
                 radius={120}
                 innerRadius={100}
                 innerCircleColor={colors.card}
-                centerLabelComponent={() => {
-                  return (
-                    <View style={{ justifyContent: 'center', alignItems: 'center' }}>
-                      <Text style={{ fontSize: 22, color: colors.text, fontWeight: 'bold' }}>
-                        {new Intl.NumberFormat('en-US', { style: 'currency', currency: currencyCode }).format(totalSpent)}
-                      </Text>
-                      <Text style={{ fontSize: 14, color: colors.textSecondary }}>Spent</Text>
-                    </View>
-                  );
-                }}
+                centerLabelComponent={() => (
+                  <View style={{ justifyContent: 'center', alignItems: 'center' }}>
+                    <Text style={{ fontSize: 22, color: colors.text, fontWeight: 'bold' }}>
+                      {new Intl.NumberFormat('en-US', { style: 'currency', currency: currencyCode }).format(totalSpent)}
+                    </Text>
+                    <Text style={{ fontSize: 14, color: colors.textSecondary }}>Spent</Text>
+                  </View>
+                )}
               />
             </View>
 
@@ -260,14 +513,14 @@ export const DashboardScreen = () => {
           <Text style={[styles.manageButtonText, { color: colors.primary }]}>Manage Recurring Bills</Text>
         </TouchableOpacity>
 
-        {/* Additional Info (Optional for now, but good for layout) */}
         <View style={styles.infoContainer}>
           <Text style={[styles.infoText, { color: colors.textSecondary }]}>
-            Your recurring bills are deducted from your base income to calculate your disposable income.
+            Your recurring bills and planned earmarks are deducted to calculate disposable income for each pay cycle.
           </Text>
         </View>
       </ScrollView>
 
+      {/* Edit Income Modal */}
       <Modal
         animationType="slide"
         transparent={true}
@@ -277,8 +530,10 @@ export const DashboardScreen = () => {
         <View style={styles.modalCenteredView}>
           <View style={[styles.modalView, { backgroundColor: colors.card }]}>
             <Text style={[styles.modalTitle, { color: colors.text }]}>Edit Income</Text>
-            <Text style={[styles.modalSubtitle, { color: colors.textSecondary }]}>Override income for this cycle only.</Text>
-            
+            <Text style={[styles.modalSubtitle, { color: colors.textSecondary }]}>
+              Override income for this cycle only.
+            </Text>
+
             <TextInput
               style={[styles.input, { color: colors.text, borderColor: colors.border }]}
               onChangeText={setTempIncome}
@@ -305,6 +560,72 @@ export const DashboardScreen = () => {
           </View>
         </View>
       </Modal>
+
+      {/* Plan Expense Modal */}
+      <Modal
+        animationType="slide"
+        transparent={true}
+        visible={planModalVisible}
+        onRequestClose={() => setPlanModalVisible(false)}
+      >
+        <View style={styles.modalCenteredView}>
+          <View style={[styles.modalView, { backgroundColor: colors.card }]}>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>Plan Future Expense</Text>
+            <Text style={[styles.modalSubtitle, { color: colors.textSecondary }]}>
+              Reserve budget in this cycle for an upcoming expense.
+            </Text>
+
+            <TextInput
+              style={[styles.input, { color: colors.text, borderColor: colors.border }]}
+              onChangeText={setPlanTitle}
+              value={planTitle}
+              placeholder="Title (e.g. Car Insurance)"
+              placeholderTextColor={colors.textSecondary}
+            />
+
+            <TextInput
+              style={[styles.input, { color: colors.text, borderColor: colors.border }]}
+              onChangeText={setPlanAmount}
+              value={planAmount}
+              keyboardType="numeric"
+              placeholder="Amount"
+              placeholderTextColor={colors.textSecondary}
+            />
+
+            <TextInput
+              style={[styles.input, { color: colors.text, borderColor: colors.border }]}
+              onChangeText={setPlanDate}
+              value={planDate}
+              placeholder="Target Date (YYYY-MM-DD)"
+              placeholderTextColor={colors.textSecondary}
+            />
+
+            <TextInput
+              style={[styles.input, { color: colors.text, borderColor: colors.border }]}
+              onChangeText={setPlanCategory}
+              value={planCategory}
+              placeholder="Category (e.g. Travel, Auto, Home)"
+              placeholderTextColor={colors.textSecondary}
+            />
+
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={[styles.button, styles.buttonCancel]}
+                onPress={() => setPlanModalVisible(false)}
+              >
+                <Text style={styles.textStyle}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.button, styles.buttonSave]}
+                onPress={handleSavePlannedExpense}
+                disabled={savingPlan}
+              >
+                <Text style={styles.textStyle}>{savingPlan ? 'Saving...' : 'Add Earmark'}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 };
@@ -314,7 +635,7 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     padding: 20,
     backgroundColor: '#F8F9FA',
-    paddingBottom: 100, // Add padding for FAB
+    paddingBottom: 100,
   },
   centered: {
     flex: 1,
@@ -325,31 +646,76 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 24, // Push the cards down
-    paddingHorizontal: 4, // Align with the cards
+    marginBottom: 24,
+    paddingHorizontal: 4,
   },
   greetingText: {
     fontSize: 20,
-    color: '#9CA3AF', // Soft Grey
-    marginBottom: 4,
+    fontWeight: '700',
+    color: '#111827',
+    marginBottom: 2,
+    letterSpacing: -0.5,
   },
   userNameText: {
-    fontSize: 24, // Big and bold
-    fontWeight: '700',
-    color: '#1F2937', // Dark Grey (or White if keeping dark mode)
+    fontSize: 14,
+    color: '#6B7280',
+    fontWeight: '500',
   },
   profileButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#E5E7EB', // Light grey background
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#F3F4F6',
     justifyContent: 'center',
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
   },
   profileInitials: {
     fontSize: 16,
     fontWeight: '600',
     color: '#4B5563',
+  },
+  cycleNavCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 16,
+    borderWidth: 1,
+    marginBottom: 16,
+  },
+  cycleNavButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cycleNavCenter: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  cycleNavTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  cycleNavDates: {
+    fontSize: 12,
+    marginTop: 2,
+    fontWeight: '500',
+  },
+  todayPill: {
+    marginLeft: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 10,
+  },
+  todayPillText: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '700',
   },
   card: {
     backgroundColor: '#fff',
@@ -373,7 +739,21 @@ const styles = StyleSheet.create({
     fontSize: 42,
     fontWeight: '700',
     letterSpacing: -1,
-    marginBottom: 24,
+    marginBottom: 12,
+  },
+  dailyAllowanceBadge: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    marginBottom: 20,
+  },
+  dailyAllowanceText: {
+    fontSize: 15,
+    fontWeight: '500',
+  },
+  dailyAllowanceSubtext: {
+    fontSize: 12,
+    marginTop: 2,
   },
   cycleContainer: {
     flexDirection: 'row',
@@ -473,27 +853,59 @@ const styles = StyleSheet.create({
   },
   quickActionsContainer: {
     flexDirection: 'row',
-    marginTop: 24,
-    marginBottom: 24,
+    marginTop: 10,
+    marginBottom: 20,
     justifyContent: 'space-between',
+    gap: 12,
   },
   actionButtonSplit: {
-    flex: 0.48,
-    borderRadius: 20,
-    height: 56,
+    flex: 1,
+    height: 52,
+    borderRadius: 14,
+    flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
-    flexDirection: 'row',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
+    shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 4,
+    shadowRadius: 4,
+    elevation: 3,
   },
   actionButtonText: {
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
+  },
+  addEarmarkButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+  },
+  addEarmarkButtonText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  earmarkItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+  },
+  earmarkTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    marginBottom: 2,
+  },
+  earmarkAmount: {
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  actionIconPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
   },
   manageButton: {
     backgroundColor: '#fff',
@@ -546,7 +958,7 @@ const styles = StyleSheet.create({
     margin: 20,
     backgroundColor: 'white',
     borderRadius: 20,
-    padding: 35,
+    padding: 24,
     alignItems: 'center',
     shadowColor: '#000',
     shadowOffset: {
@@ -556,39 +968,41 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.25,
     shadowRadius: 4,
     elevation: 5,
-    width: '80%',
+    width: '85%',
   },
   modalTitle: {
     fontSize: 20,
     fontWeight: 'bold',
-    marginBottom: 10,
+    marginBottom: 6,
   },
   modalSubtitle: {
-    fontSize: 14,
+    fontSize: 13,
     color: '#8E8E93',
-    marginBottom: 20,
+    marginBottom: 16,
     textAlign: 'center',
   },
   input: {
-    height: 50,
+    height: 48,
     width: '100%',
     borderColor: '#E5E5EA',
     borderWidth: 1,
     borderRadius: 10,
-    paddingHorizontal: 15,
-    marginBottom: 20,
-    fontSize: 18,
+    paddingHorizontal: 14,
+    marginBottom: 12,
+    fontSize: 16,
   },
   modalButtons: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     width: '100%',
+    marginTop: 8,
+    gap: 12,
   },
   button: {
+    flex: 1,
     borderRadius: 10,
-    padding: 10,
+    padding: 12,
     elevation: 2,
-    minWidth: 100,
     alignItems: 'center',
   },
   buttonCancel: {
@@ -601,5 +1015,6 @@ const styles = StyleSheet.create({
     color: 'white',
     fontWeight: 'bold',
     textAlign: 'center',
+    fontSize: 15,
   },
 });
