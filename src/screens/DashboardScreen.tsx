@@ -40,6 +40,8 @@ export const DashboardScreen = () => {
   const {
     leftToSpend,
     baseIncome,
+    totalRecurring,
+    pendingRecurring,
     currentCycle,
     progress,
     loading,
@@ -54,6 +56,8 @@ export const DashboardScreen = () => {
     daysRemaining,
     safeDailyAllowance,
     cycleOffset,
+    billMode,
+    setBillMode,
     navigateCycle,
     resetToCurrentCycle,
   } = useDashboardData();
@@ -322,6 +326,33 @@ export const DashboardScreen = () => {
             </Text>
           </View>
 
+          {/* Bill Deduction Mode Toggle */}
+          <View style={[styles.billModeToggleContainer, { backgroundColor: colors.border }]}>
+            <TouchableOpacity
+              onPress={() => setBillMode('reserved')}
+              style={[
+                styles.billModePill,
+                billMode === 'reserved' && { backgroundColor: colors.card, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.1, elevation: 1 },
+              ]}
+            >
+              <Text style={[styles.billModePillText, { color: billMode === 'reserved' ? colors.primary : colors.textSecondary }]}>
+                Reserved (All Bills)
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={() => setBillMode('pending')}
+              style={[
+                styles.billModePill,
+                billMode === 'pending' && { backgroundColor: colors.card, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.1, elevation: 1 },
+              ]}
+            >
+              <Text style={[styles.billModePillText, { color: billMode === 'pending' ? colors.primary : colors.textSecondary }]}>
+                Cashflow (Pending Only)
+              </Text>
+            </TouchableOpacity>
+          </View>
+
           <Text style={[styles.amount, { color: spendColor }]}>
             {new Intl.NumberFormat('en-US', { style: 'currency', currency: currencyCode }).format(leftToSpend)}
           </Text>
@@ -359,6 +390,24 @@ export const DashboardScreen = () => {
               </TouchableOpacity>
             </View>
           </View>
+
+          {(billMode === 'reserved' ? totalRecurring : pendingRecurring) > 0 && (
+            <View style={[styles.incomeContainer, { borderTopColor: colors.border }]}>
+              <View>
+                <Text style={[styles.incomeLabel, { color: colors.text }]}>
+                  {billMode === 'reserved' ? 'Bills (All Reserved):' : 'Bills (Pending):'}
+                </Text>
+                {billMode === 'pending' && totalRecurring > pendingRecurring && (
+                  <Text style={{ fontSize: 11, color: '#10B981', marginTop: 2 }}>
+                    {new Intl.NumberFormat('en-US', { style: 'currency', currency: currencyCode }).format(totalRecurring - pendingRecurring)} already cleared
+                  </Text>
+                )}
+              </View>
+              <Text style={[styles.incomeValue, { color: '#EF4444', fontWeight: '700' }]}>
+                -{new Intl.NumberFormat('en-US', { style: 'currency', currency: currencyCode }).format(billMode === 'reserved' ? totalRecurring : pendingRecurring)}
+              </Text>
+            </View>
+          )}
 
           {totalPlanned > 0 && (
             <View style={[styles.incomeContainer, { borderTopColor: colors.border }]}>
@@ -716,6 +765,23 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 11,
     fontWeight: '700',
+  },
+  billModeToggleContainer: {
+    flexDirection: 'row',
+    borderRadius: 12,
+    padding: 3,
+    marginBottom: 16,
+  },
+  billModePill: {
+    flex: 1,
+    paddingVertical: 7,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  billModePillText: {
+    fontSize: 12,
+    fontWeight: '600',
   },
   card: {
     backgroundColor: '#fff',

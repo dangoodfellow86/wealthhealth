@@ -1,12 +1,13 @@
 import {
-    addDoc,
-    collection,
-    deleteDoc,
-    doc,
-    getDocs,
-    orderBy,
-    query,
-    updateDoc
+  addDoc,
+  collection,
+  deleteDoc,
+  deleteField,
+  doc,
+  getDocs,
+  orderBy,
+  query,
+  updateDoc,
 } from 'firebase/firestore';
 import { db } from '../firebaseConfig';
 import { RecurringItem } from '../types';
@@ -14,8 +15,7 @@ import { RecurringItem } from '../types';
 export const getRecurringBills = async (uid: string): Promise<RecurringItem[]> => {
   try {
     const recurringCollRef = collection(db, 'users', uid, 'recurring_items');
-    // Order by title or dayOfMonth? Let's order by title for now.
-    const q = query(recurringCollRef, orderBy('title')); 
+    const q = query(recurringCollRef, orderBy('title'));
     const snapshot = await getDocs(q);
     return snapshot.docs.map(doc => ({
       id: doc.id,
@@ -27,10 +27,19 @@ export const getRecurringBills = async (uid: string): Promise<RecurringItem[]> =
   }
 };
 
-export const addRecurringBill = async (uid: string, bill: Omit<RecurringItem, 'id'>): Promise<RecurringItem> => {
+export const addRecurringBill = async (
+  uid: string,
+  bill: Omit<RecurringItem, 'id'>
+): Promise<RecurringItem> => {
   try {
     const recurringCollRef = collection(db, 'users', uid, 'recurring_items');
-    const docRef = await addDoc(recurringCollRef, bill);
+    const sanitized: Record<string, any> = {};
+    for (const [key, value] of Object.entries(bill)) {
+      if (value !== undefined) {
+        sanitized[key] = value;
+      }
+    }
+    const docRef = await addDoc(recurringCollRef, sanitized);
     return {
       id: docRef.id,
       ...bill,
@@ -41,10 +50,20 @@ export const addRecurringBill = async (uid: string, bill: Omit<RecurringItem, 'i
   }
 };
 
-export const updateRecurringBill = async (uid: string, billId: string, updates: Partial<RecurringItem>): Promise<void> => {
+export const updateRecurringBill = async (
+  uid: string,
+  billId: string,
+  updates: Record<string, any>
+): Promise<void> => {
   try {
     const billRef = doc(db, 'users', uid, 'recurring_items', billId);
-    await updateDoc(billRef, updates);
+    const sanitized: Record<string, any> = {};
+    for (const [key, value] of Object.entries(updates)) {
+      if (value !== undefined) {
+        sanitized[key] = value;
+      }
+    }
+    await updateDoc(billRef, sanitized);
   } catch (error) {
     console.error('Error updating recurring bill:', error);
     throw error;
@@ -60,3 +79,5 @@ export const deleteRecurringBill = async (uid: string, billId: string): Promise<
     throw error;
   }
 };
+
+export { deleteField };

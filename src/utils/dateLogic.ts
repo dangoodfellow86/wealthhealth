@@ -3,6 +3,7 @@ import {
   addMonths,
   addWeeks,
   endOfDay,
+  endOfMonth,
   isAfter,
   isBefore,
   isValid,
@@ -11,6 +12,7 @@ import {
   parseISO,
   setDate,
   startOfDay,
+  startOfMonth,
   subDays,
   subMonths
 } from 'date-fns';
@@ -225,39 +227,34 @@ export const getPayPeriodWithOffset = (
 };
 
 /**
- * Determines whether a recurring bill is due within a given pay period.
+ * Returns the exact due dates for a bill that fall within [cycleStart, cycleEnd].
  */
-export const isBillDueInPeriod = (
+export const getBillDueDatesInPeriod = (
   bill: RecurringItem,
   cycleStart: Date,
   cycleEnd: Date
-): boolean => {
-  if (!bill.isActive) return false;
+): Date[] => {
+  if (!bill.isActive) return [];
   const frequency = bill.frequency || 'MONTHLY';
-
   const start = startOfDay(cycleStart);
   const end = endOfDay(cycleEnd);
-
-  if (frequency === 'WEEKLY' || frequency === 'BI_WEEKLY') {
-    return true;
-  }
+  const dueDates: Date[] = [];
 
   const startYear = start.getFullYear();
   const endYear = end.getFullYear();
 
   if (frequency === 'ANNUAL') {
-    const targetMonth = (bill.dueMonth || 1) - 1; // 0-indexed
+    const targetMonth = (bill.dueMonth || 1) - 1;
     const targetDay = bill.dayOfMonth || 1;
-
     for (let yr = startYear; yr <= endYear; yr++) {
       const daysInTargetMonth = lastDayOfMonth(new Date(yr, targetMonth, 1)).getDate();
       const actualDay = Math.min(targetDay, daysInTargetMonth);
       const billDate = startOfDay(new Date(yr, targetMonth, actualDay));
       if (!isBefore(billDate, start) && !isAfter(billDate, end)) {
-        return true;
+        dueDates.push(billDate);
       }
     }
-    return false;
+    return dueDates;
   }
 
   if (frequency === 'QUARTERLY') {
@@ -271,28 +268,63 @@ export const isBillDueInPeriod = (
         const actualDay = Math.min(targetDay, daysInTargetMonth);
         const billDate = startOfDay(new Date(yr, m, actualDay));
         if (!isBefore(billDate, start) && !isAfter(billDate, end)) {
-          return true;
+          dueDates.push(billDate);
         }
       }
     }
-    return false;
+    return dueDates;
+  }
+
+  if (frequency === 'WEEKLY' || frequency === 'BI_WEEKLY') {
+    dueDates.push(start);
+    return dueDates;
   }
 
   // Default: MONTHLY
   if (!bill.dayOfMonth) {
-    return true; // No specific date provided; applies to every monthly cycle
+    dueDates.push(start);
+    return dueDates;
   }
 
-  let cursor = startOfDay(start);
-  while (!isAfter(cursor, end)) {
+  // Start cursor at the first day of the start month to avoid skipping month 2
+  let cursor = startOfMonth(start);
+  const endLimit = endOfMonth(end);
+  while (!isAfter(cursor, endLimit)) {
     const daysInMonth = lastDayOfMonth(cursor).getDate();
     const actualDay = Math.min(bill.dayOfMonth, daysInMonth);
     const billDate = startOfDay(setDate(cursor, actualDay));
     if (!isBefore(billDate, start) && !isAfter(billDate, end)) {
-      return true;
+      dueDates.push(billDate);
     }
     cursor = addMonths(cursor, 1);
   }
 
-  return false;
+  return dueDates;
+};
+
+/**
+ * Determines whether a recurring bill is due within a given pay period.
+ */
+export const isBillDueInPeriod = (
+  bill: RecurringItem,
+  cycleStart: Date,
+  cycleEnd: Date
+): boolean => {
+  return getBillDueDatesInPeriod(bill, cycleStart, cycleEnd).length > 0;
+};
+
+/**
+ * Determines whether a recurring bill is still pending (due today or in the future) in this period.
+ */
+export const isBillPendingInPeriod = (
+  bill: RecurringItem,
+  cycleStart: Date,
+  cycleEnd: Date,
+  referenceDate: Date = new Date()
+): boolean => {
+  const dueDates = getBillDueDatesInPeriod(bill, cycleStart, cycleEnd);
+  if (dueDates.length === 0) return false;
+
+  const today = startOfDay(referenceDate);
+  return dueDates.some(d => !isBefore(d, today));
 };

@@ -4,12 +4,15 @@ import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { db } from '../firebaseConfig';
 import { CycleOverride, PlannedExpense, RecurringItem, Transaction, UserProfile } from '../types';
-import { getPayPeriodWithOffset, isBillDueInPeriod } from '../utils/dateLogic';
+import { getPayPeriodWithOffset, isBillDueInPeriod, isBillPendingInPeriod } from '../utils/dateLogic';
+
+export type BillDeductionMode = 'reserved' | 'pending';
 
 export interface DashboardData {
   leftToSpend: number;
   baseIncome: number;
   totalRecurring: number;
+  pendingRecurring: number;
   totalSpent: number;
   totalPlanned: number;
   currencyCode: string;
@@ -27,6 +30,8 @@ export interface DashboardData {
   daysRemaining: number;
   safeDailyAllowance: number;
   cycleOffset: number;
+  billMode: BillDeductionMode;
+  setBillMode: (mode: BillDeductionMode) => void;
   setCycleOffset: (offset: number) => void;
   navigateCycle: (direction: number) => void;
   resetToCurrentCycle: () => void;
@@ -36,6 +41,7 @@ export interface DashboardData {
 export const useDashboardData = (initialOffset: number = 0): DashboardData => {
   const { user } = useAuth();
   const [cycleOffset, setCycleOffset] = useState(initialOffset);
+  const [billMode, setBillMode] = useState<BillDeductionMode>('reserved');
 
   const navigateCycle = useCallback((delta: number) => {
     setCycleOffset(prev => prev + delta);
@@ -45,10 +51,11 @@ export const useDashboardData = (initialOffset: number = 0): DashboardData => {
     setCycleOffset(0);
   }, []);
 
-  const [data, setData] = useState<Omit<DashboardData, 'cycleOffset' | 'setCycleOffset' | 'navigateCycle' | 'resetToCurrentCycle'>>({
+  const [data, setData] = useState<Omit<DashboardData, 'cycleOffset' | 'setCycleOffset' | 'navigateCycle' | 'resetToCurrentCycle' | 'billMode' | 'setBillMode'>>({
     leftToSpend: 0,
     baseIncome: 0,
     totalRecurring: 0,
+    pendingRecurring: 0,
     totalSpent: 0,
     totalPlanned: 0,
     currencyCode: 'USD',
@@ -108,11 +115,18 @@ export const useDashboardData = (initialOffset: number = 0): DashboardData => {
         ...doc.data(),
       })) as RecurringItem[];
 
-      // Filter active recurring items that fall due within this cycle and sum them
+      // Filter active recurring items that fall due within this cycle
       const activeRecurringItems = recurringItems.filter(item =>
         isBillDueInPeriod(item, startDate, endDate)
       );
       const totalRecurring = activeRecurringItems.reduce((sum, item) => sum + item.amount, 0);
+
+      // Filter pending recurring items (due today or later in this cycle)
+      const today = startOfDay(new Date());
+      const pendingRecurringItems = activeRecurringItems.filter(item =>
+        isBillPendingInPeriod(item, startDate, endDate, today)
+      );
+      const pendingRecurring = pendingRecurringItems.reduce((sum, item) => sum + item.amount, 0);
 
       // 4. Fetch Transactions
       const transactionsCollRef = collection(db, 'users', user.uid, 'transactions');
@@ -159,20 +173,21 @@ export const useDashboardData = (initialOffset: number = 0): DashboardData => {
       }
 
       // 5. Calculate Left to Spend
-      // Formula: LeftToSpend = (BaseIncome + AdHocIncome) - (SumOfActiveRecurringBills) - (SumOfExpensesInPeriod) - (SumOfPlannedExpenses)
-      const leftToSpend = (income + totalAdHocIncome) - totalRecurring - totalSpent - totalPlanned;
+      // Mode 'reserved': deduct ALL bills due in cycle upfront (Safety view)
+      // Mode 'pending': deduct only upcoming bills still to clear (Cashflow view)
+      const billDeduction = billMode === 'reserved' ? totalRecurring : pendingRecurring;
+      const leftToSpend = (income + totalAdHocIncome) - billDeduction - totalSpent - totalPlanned;
 
       // Calculate Progress
       let progress = 0;
-      const disposableIncome = income - totalRecurring - totalPlanned;
+      const disposableIncome = income - billDeduction - totalPlanned;
       if (disposableIncome > 0) {
         progress = totalSpent / disposableIncome;
       } else if (totalSpent > 0) {
-        progress = 1; // Over budget or 0 disposable
+        progress = 1;
       }
 
       // Calculate Days Remaining and Safe Daily Allowance
-      const today = startOfDay(new Date());
       let daysRemaining = 0;
       if (cycleOffset === 0) {
         daysRemaining = Math.max(1, differenceInCalendarDays(endDate, today) + 1);
@@ -187,6 +202,7 @@ export const useDashboardData = (initialOffset: number = 0): DashboardData => {
         leftToSpend,
         baseIncome: income,
         totalRecurring,
+        pendingRecurring,
         totalSpent,
         totalPlanned,
         currencyCode: preferences?.currencyCode || 'USD',
@@ -207,7 +223,7 @@ export const useDashboardData = (initialOffset: number = 0): DashboardData => {
       console.error('Error fetching dashboard data:', err);
       setData(prev => ({ ...prev, loading: false, error: err.message }));
     }
-  }, [user, cycleOffset]);
+  }, [user, cycleOffset, billMode]);
 
   useEffect(() => {
     fetchData();
@@ -216,6 +232,8 @@ export const useDashboardData = (initialOffset: number = 0): DashboardData => {
   return {
     ...data,
     cycleOffset,
+    billMode,
+    setBillMode,
     setCycleOffset,
     navigateCycle,
     resetToCurrentCycle,

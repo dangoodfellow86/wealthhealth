@@ -19,6 +19,7 @@ import { useAuth } from '../src/context/AuthContext';
 import { useThemeColor } from '../src/hooks/useThemeColor';
 import {
   addRecurringBill,
+  deleteField,
   deleteRecurringBill,
   getRecurringBills,
   updateRecurringBill,
@@ -111,31 +112,50 @@ export default function ManageBillsScreen() {
       }
 
       if (editingId) {
-        // Update existing bill
-        const updates: Partial<RecurringItem> = {
+        // Update existing bill with clean payload (using deleteField for cleared properties)
+        const updates: Record<string, any> = {
           title: newTitle,
           amount,
-          dayOfMonth: day || undefined,
           frequency: newFrequency,
-          dueMonth: (newFrequency === 'ANNUAL' || newFrequency === 'QUARTERLY') ? dueMonth : undefined,
         };
 
+        if (day) {
+          updates.dayOfMonth = day;
+        } else {
+          updates.dayOfMonth = deleteField();
+        }
+
+        if ((newFrequency === 'ANNUAL' || newFrequency === 'QUARTERLY') && dueMonth) {
+          updates.dueMonth = dueMonth;
+        } else {
+          updates.dueMonth = deleteField();
+        }
+
         await updateRecurringBill(user.uid, editingId, updates);
-        setBills(bills.map(b => (b.id === editingId ? { ...b, ...updates } : b)));
+        setBills(bills.map(b => (b.id === editingId ? {
+          ...b,
+          title: newTitle,
+          amount,
+          frequency: newFrequency,
+          dayOfMonth: day || undefined,
+          dueMonth: (newFrequency === 'ANNUAL' || newFrequency === 'QUARTERLY') ? dueMonth : undefined,
+        } : b)));
         setEditingId(null);
       } else {
-        // Add new bill
-        const newBill: Omit<RecurringItem, 'id'> = {
+        // Add new bill with clean properties
+        const newBill: Record<string, any> = {
           title: newTitle,
           amount,
           isActive: true,
           category: 'Bills',
           frequency: newFrequency,
-          dayOfMonth: day,
-          dueMonth: (newFrequency === 'ANNUAL' || newFrequency === 'QUARTERLY') ? dueMonth : undefined,
         };
+        if (day) newBill.dayOfMonth = day;
+        if ((newFrequency === 'ANNUAL' || newFrequency === 'QUARTERLY') && dueMonth) {
+          newBill.dueMonth = dueMonth;
+        }
 
-        const addedBill = await addRecurringBill(user.uid, newBill);
+        const addedBill = await addRecurringBill(user.uid, newBill as Omit<RecurringItem, 'id'>);
         setBills([...bills, addedBill]);
       }
 
