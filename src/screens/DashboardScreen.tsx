@@ -5,6 +5,7 @@ import {
   ActivityIndicator,
   Alert,
   Dimensions,
+  Image,
   Modal,
   RefreshControl,
   ScrollView,
@@ -254,11 +255,18 @@ export const DashboardScreen = () => {
         }
       >
         <View style={styles.headerContainer}>
-          <View>
-            <Text style={[styles.greetingText, { color: colors.textSecondary }]}>Welcome back,</Text>
-            <Text style={[styles.userNameText, { color: colors.text }]}>
-              {userProfile?.displayName || user?.displayName || 'User'}
-            </Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+            <Image
+              source={require('../../assets/images/logo.png')}
+              style={styles.headerLogo}
+              resizeMode="contain"
+            />
+            <View>
+              <Text style={[styles.greetingText, { color: colors.textSecondary }]}>Welcome back,</Text>
+              <Text style={[styles.userNameText, { color: colors.text }]}>
+                {userProfile?.displayName || user?.displayName || 'User'}
+              </Text>
+            </View>
           </View>
 
           {/* Profile Avatar */}
@@ -697,6 +705,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 24,
     paddingHorizontal: 4,
+  },
+  headerLogo: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
   },
   greetingText: {
     fontSize: 20,
